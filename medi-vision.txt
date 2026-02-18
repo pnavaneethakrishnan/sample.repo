@@ -1,0 +1,312 @@
+import customtkinter as ctk
+import google.generativeai as genai
+from tkinter import messagebox, filedialog
+import cv2
+from PIL import Image
+import os
+
+# --- AI Configuration ---
+API_KEY = "AIzaSyBB3ZdecLsqBaLTYAsrL9Zor67AiiIPXqE"
+genai.configure(api_key=API_KEY)
+
+# Gemini 2.0 Flash Model setup
+try:
+    model = genai.GenerativeModel('gemini-2.5-flash')
+except Exception:
+    model = genai.GenerativeModel('gemini-2.0-flash')
+
+class MediVisionApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("MEDI-VISION")
+        self.geometry("600x700")
+        
+        self.user_age = ""
+        self.old_med = "None"
+        self.new_med = ""
+
+        # UI Design
+        ctk.CTkLabel(
+            self, text="MEDI-VISION", font=("Arial Bold", 32)
+        ).pack(pady=20)
+        
+        self.age_entry = ctk.CTkEntry(
+            self, placeholder_text="Enter Your Age", width=200
+        )
+        self.age_entry.pack(pady=10)
+
+        ctk.CTkLabel(
+            self, text="Are you taking any medicine daily?", 
+            font=("Arial", 14)
+        ).pack(pady=5)
+        
+        self.btn_frame = ctk.CTkFrame(self)
+        self.btn_frame.pack(pady=10)
+        
+        ctk.CTkButton(
+            self.btn_frame, text="YES", width=100, 
+            command=lambda: self.show_options(True)
+        ).grid(row=0, column=0, padx=10)
+        
+        ctk.CTkButton(
+            self.btn_frame, text="NO", width=100, 
+            command=lambda: self.show_options(False)
+        ).grid(row=0, column=1, padx=10)
+
+        self.option_frame = ctk.CTkFrame(self)
+
+    def show_options(self, is_yes):
+        self.user_age = self.age_entry.get()
+        if not self.user_age:
+            messagebox.showwarning("Input Error", "Please enter age first!")
+            return
+        
+        if is_yes:
+            for widget in self.option_frame.winfo_children():
+                widget.destroy()
+            self.option_frame.pack(pady=20, fill="both", expand=True, padx=20)
+            
+            ctk.CTkLabel(self.option_frame, text="How to add CURRENT Daily Medicine?", font=("Arial", 18)).pack(pady=10)
+            
+            ctk.CTkButton(self.option_frame, text="Scan Old Med (Camera)", command=lambda: self.scan_old_logic("camera"), fg_color="#228B22").pack(pady=5)
+            ctk.CTkButton(self.option_frame, text="Upload Old Med (Gallery)", command=lambda: self.scan_old_logic("gallery")).pack(pady=5)
+            ctk.CTkButton(self.option_frame, text="Type Old Med Name", command=lambda: self.scan_old_logic("type")).pack(pady=5)
+        else:
+            self.old_med = "None"
+            self.display_main_options()
+
+    def scan_old_logic(self, mode):
+        if mode == "camera":
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                messagebox.showerror("Error", "Could not open camera")
+                return
+            
+            messagebox.showinfo("Old Med Scan", "Capture (S) or Close window to Cancel")
+            captured = False
+            while True:
+                ret, frame = cap.read()
+                if not ret: break
+                
+                win_name = "Scanning OLD Medicine"
+                cv2.imshow(win_name, frame)
+                
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('s'):
+                    cv2.imwrite("old_med.jpg", frame)
+                    captured = True
+                    break
+                elif key == 27 or cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+                    
+            cap.release()
+            cv2.destroyAllWindows()
+            
+            if captured and os.path.exists("old_med.jpg"):
+                img = Image.open("old_med.jpg")
+                self.identify_old_with_ai(img)
+            else:
+                self.display_main_options()
+            
+        elif mode == "gallery":
+            file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
+            if file_path:
+                img = Image.open(file_path)
+                self.identify_old_with_ai(img)
+            else:
+                self.display_main_options()
+                
+        elif mode == "type":
+            # Manual typing-layum name matrum dosage rendaiyum kekkurom
+            dialog_name = ctk.CTkInputDialog(text="Enter daily medicine name:", title="Medicine Name")
+            name = dialog_name.get_input()
+            
+            if name and name.strip():
+                dialog_dose = ctk.CTkInputDialog(
+                    text=f"Enter Dosage for {name.strip()}\n(e.g., 500mg, 1 tablet, 5ml):", 
+                    title="Dosage"
+                )
+                dose = dialog_dose.get_input()
+                
+                # Name and Dosage sethu store panrom
+                dosage_val = dose.strip() if dose else "Dosage not specified"
+                self.old_med = f"{name.strip()} ({dosage_val})"
+                self.display_main_options()
+            else:
+                self.display_main_options()
+
+    def identify_old_with_ai(self, img_data):
+        try:
+            # AI kitta Name matrum Type (Liquid/Tablet) rendaiyum kekkurom
+            prompt = "Identify this medicine. Return ONLY 'Name | Type'. Type should be either 'Liquid' or 'Tablet'."
+            response = model.generate_content([prompt, img_data])
+            
+            result = response.text.strip().split('|')
+            identified_name = result[0].strip().upper()
+            med_type = result[1].strip().lower() if len(result) > 1 else "tablet"
+
+            # Dosage Selection Window
+            dosage_win = ctk.CTkToplevel(self)
+            dosage_win.title("Dosage Selection")
+            dosage_win.geometry("450x250") # Height-ah konjam kuraichalaam clean-ah irukkum
+            dosage_win.attributes("-topmost", True)
+            
+            ctk.CTkLabel(dosage_win, text=f"MEDICINE: {identified_name}", font=("Arial", 16, "bold"), text_color="#228B22").pack(pady=15)
+            
+            # Direct English Question only
+            ctk.CTkLabel(dosage_win, text="How much do you take per dose?", font=("Arial", 14)).pack(pady=5)
+
+            def set_dosage(val):
+                self.old_med = f"{identified_name} ({val})"
+                dosage_win.destroy()
+                messagebox.showinfo("Success", f"Daily Medicine set to: {self.old_med}")
+                self.display_main_options()
+
+            button_frame = ctk.CTkFrame(dosage_win)
+            button_frame.pack(pady=20)
+
+            if "liquid" in med_type or "gel" in med_type:
+                # Liquid options (ml)
+                for ml in ["5ml", "10ml", "15ml", "20ml"]:
+                    ctk.CTkButton(button_frame, text=ml, width=80, command=lambda m=ml: set_dosage(m)).pack(side="left", padx=10)
+            else:
+                # Tablet options
+                for tab in ["0.5 Tab", "1 Tab", "2 Tabs", "3 Tabs"]:
+                    ctk.CTkButton(button_frame, text=tab, width=80, command=lambda t=tab: set_dosage(t)).pack(side="left", padx=10)
+
+        except Exception as e:
+            messagebox.showerror("AI Error", f"Could not identify: {str(e)}")
+            self.display_main_options()
+
+    def manual_input(self, name, win):
+        win.destroy()
+        dialog = ctk.CTkInputDialog(text="Enter dosage manually:", title="Manual Dosage")
+        val = dialog.get_input()
+        self.old_med = f"{name} ({val if val else 'Unknown'})"
+        self.display_main_options()
+
+    def display_main_options(self):
+        for widget in self.option_frame.winfo_children():
+            widget.destroy()
+            
+        self.option_frame.pack(pady=20, fill="both", expand=True, padx=20)
+        
+        # Status highlight pannuvom (Step 2 label removed)
+        status_text = f"Current Medicine: {self.old_med}\nPatient Age: {self.user_age}"
+        
+        ctk.CTkLabel(
+            self.option_frame, text=status_text, 
+            font=("Arial", 15, "bold"), text_color="#228B22", justify="center"
+        ).pack(pady=10)
+
+        ctk.CTkLabel(
+            self.option_frame, text="Add New Medicine to Check Safety", 
+            font=("Arial", 14)
+        ).pack(pady=5)
+        
+        ctk.CTkButton(
+            self.option_frame, text="Live Scan (New Medicine)", 
+            command=self.live_scan, fg_color="#228B22", height=40
+        ).pack(pady=8)
+        
+        ctk.CTkButton(
+            self.option_frame, text="Upload from Gallery", 
+            command=self.upload_gallery, height=40
+        ).pack(pady=8)
+        
+        ctk.CTkButton(
+            self.option_frame, text="Type Medicine Name", 
+            command=self.type_manual, height=40
+        ).pack(pady=8)
+
+    def live_scan(self):
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            messagebox.showerror("Error", "Could not open camera")
+            return
+            
+        messagebox.showinfo("Camera", "Press 'S' to capture. Close window to exit.")
+        captured = False
+        win_name = "Scanning Medicine - Press 'S' to Save"
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret: break
+            cv2.imshow(win_name, frame)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('s'):
+                cv2.imwrite("temp_med.jpg", frame)
+                captured = True
+                break
+            # FIX: New medicine scan-layum camera close track aagum
+            elif key == 27 or cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                break
+                
+        cap.release()
+        cv2.destroyAllWindows()
+        
+        if captured and os.path.exists("temp_med.jpg"):
+            img = Image.open("temp_med.jpg")
+            self.process_ai(img, is_image=True)
+        else:
+            self.display_main_options()
+
+    def upload_gallery(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
+        if file_path:
+            img = Image.open(file_path)
+            self.process_ai(img, is_image=True)
+        else:
+            self.display_main_options()
+
+    def type_manual(self):
+        dialog = ctk.CTkInputDialog(text="Enter New Medicine Name:", title="Manual Entry")
+        input_val = dialog.get_input()
+        if input_val:
+            self.process_ai(input_val.strip(), is_image=False)
+
+    def process_ai(self, med_data, is_image=False):
+        # AI-kku dosage comparison task kudukkurom
+        base_prompt = (
+            f"You are a professional Medical Pharmacist AI.\n"
+            f"Patient Age: {self.user_age}\n"
+            f"Current Daily Medication: {self.old_med}\n\n" # Idhula ippo dosage-um irukkum
+            f"Task: Analyze the Drug-Drug Interaction (DDI) specifically considering the dosages.\n"
+            f"1. Identify the NEW medicine name.\n"
+            f"2. Compare the dosage of {self.old_med} with the NEW medicine.\n"
+            f"3. INSTRUCTION: Tell the user if they should REDUCE or MAINTAIN the dosage of the NEW medicine based on the {self.old_med} intake.\n"
+            f"4. Provide the full analysis in TWO sections:\n"
+            f"   Section A: English (Medicine Name, Safety Status, DOSAGE ADJUSTMENT ADVICE, Reason).\n"
+            f"   Section B: Pure Tamil (பெயர், பாதுகாப்பு, மருந்தின் அளவை குறைக்க வேண்டுமா?, காரணம்).\n"
+            f"5. Disclaimer: Needs doctor's confirmation."
+        )
+        
+        try:
+            if is_image:
+                response = model.generate_content([base_prompt, med_data])
+            else:
+                full_prompt = base_prompt + f"\nNew Medication: {med_data}"
+                response = model.generate_content(full_prompt)
+            
+            self.show_result_window(response.text)
+        except Exception as e:
+            messagebox.showerror("AI Error", f"Problem: {str(e)}")
+
+    def show_result_window(self, text):
+        res_win = ctk.CTkToplevel(self)
+        res_win.title("AI Analysis Result")
+        res_win.geometry("520x550")
+        res_win.attributes("-topmost", True)
+        
+        txt_area = ctk.CTkTextbox(
+            res_win, width=480, height=480, font=("Arial", 14), wrap="word"
+        )
+        txt_area.pack(pady=15, padx=15)
+        txt_area.insert("0.0", text)
+        txt_area.configure(state="disabled")
+
+if __name__ == "__main__":
+    app = MediVisionApp()
+    app.mainloop()
